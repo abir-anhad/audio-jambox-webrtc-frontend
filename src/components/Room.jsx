@@ -2,14 +2,14 @@
 ================================================================================
 File: /audio-jambox/frontend/src/components/Room.jsx
 ================================================================================
-This version has been instrumented with extensive logging.
+This version is refactored to request stereo audio, matching the new config.
 */
 import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
 import * as mediasoupClient from 'mediasoup-client';
 import Peer from './Peer';
 
-const SERVER_URL = 'https://devvibe.highloka.com:3030'; // Replace with your server URL
+const SERVER_URL = 'https://devvibe.highloka.com:3030'; // Your server URL
 
 const Room = ({ roomId, onLeave }) => {
     const socketRef = useRef();
@@ -22,18 +22,16 @@ const Room = ({ roomId, onLeave }) => {
     const peerIdRef = useRef(null);
 
     const log = (msg) => console.log(`[CLIENT:${peerIdRef.current || 'unassigned'}] ${new Date().toISOString()} - ${msg}`);
-    const error = (msg, err) => console.error(`[CLIENT-ERROR:${peerIdRef.current || 'unassigned'}] ${new Date().toISOString()} - ${msg}`, err);
+    const errorLog = (msg, err) => console.error(`[CLIENT-ERROR:${peerIdRef.current || 'unassigned'}] ${new Date().toISOString()} - ${msg}`, err);
 
     const socketRequest = (type, data = {}) => {
         return new Promise((resolve, reject) => {
             if (socketRef.current) {
-                log(`>> Emitting [${type}]`);
                 socketRef.current.emit(type, { roomId, ...data }, (response) => {
                     if (response && response.error) {
-                        error(`Request [${type}] failed on server`, response.error);
+                        errorLog(`Request [${type}] failed on server`, response.error);
                         reject(response.error);
                     } else {
-                        log(`<< Received response for [${type}]`);
                         resolve(response);
                     }
                 });
@@ -47,7 +45,16 @@ const Room = ({ roomId, onLeave }) => {
         const joinRoom = async () => {
             try {
                 log('Starting joinRoom process...');
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+                // *** THE CRITICAL CHANGE IS HERE ***
+                // Requesting a stereo audio track to match the new server configuration.
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: { 
+                        echoCancellation: false, 
+                        noiseSuppression: false, 
+                        autoGainControl: false,
+                        channelCount: 2 // Request stereo audio from the microphone
+                    } 
+                });
                 log('Got user media stream');
                 setLocalStream(stream);
 
@@ -70,49 +77,20 @@ const Room = ({ roomId, onLeave }) => {
                         log('Mediasoup device loaded');
                     }
                     
-                    // --- Create Send Transport ---
                     const sendTransportParams = await socketRequest('createWebRtcTransport');
-                    log(`Send transport params received [id:${sendTransportParams.id}]`);
                     sendTransportRef.current = deviceRef.current.createSendTransport(sendTransportParams);
 
-                    sendTransportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                        log('Send transport attempting to connect...');
-                        socketRequest('connectWebRtcTransport', { transportId: sendTransportRef.current.id, dtlsParameters })
-                            .then(callback)
-                            .catch(errback);
-                    });
-
-                    sendTransportRef.current.on('produce', async (parameters, callback, errback) => {
-                        log('Send transport attempting to produce...');
-                        try {
-                            const { id } = await socketRequest('produce', { transportId: sendTransportRef.current.id, kind: parameters.kind, rtpParameters: parameters.rtpParameters });
-                            log(`Local producer created on server [id:${id}]`);
-                            callback({ id });
-                        } catch (err) {
-                            errback(err);
-                        }
-                    });
-
-                    // --- Create Recv Transport ---
+                    sendTransportRef.current.on('connect', (p, cb, eb) => socketRequest('connectWebRtcTransport', { transportId: sendTransportRef.current.id, dtlsParameters: p.dtlsParameters }).then(cb).catch(eb));
+                    sendTransportRef.current.on('produce', (p, cb, eb) => socketRequest('produce', { transportId: sendTransportRef.current.id, kind: p.kind, rtpParameters: p.rtpParameters }).then(({id}) => cb({id})).catch(eb));
+                    
                     const recvTransportParams = await socketRequest('createWebRtcTransport');
-                    log(`Recv transport params received [id:${recvTransportParams.id}]`);
                     recvTransportRef.current = deviceRef.current.createRecvTransport(recvTransportParams);
+                    recvTransportRef.current.on('connect', (p, cb, eb) => socketRequest('connectWebRtcTransport', { transportId: recvTransportRef.current.id, dtlsParameters: p.dtlsParameters }).then(cb).catch(eb));
 
-                    recvTransportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                        log('Recv transport attempting to connect...');
-                        socketRequest('connectWebRtcTransport', { transportId: recvTransportRef.current.id, dtlsParameters })
-                            .then(callback)
-                            .catch(errback);
-                    });
-
-                    // --- Produce local audio ---
                     const audioTrack = stream.getAudioTracks()[0];
-                    log('Producing local audio track...');
                     await sendTransportRef.current.produce({ track: audioTrack });
                     log('Local audio track produced.');
 
-                    // --- Consume existing peers ---
-                    log(`Consuming from ${peerIds.length} existing peers...`);
                     for (const peerId of peerIds) {
                         if (peerId !== socket.id) consume(peerId);
                     }
@@ -127,18 +105,17 @@ const Room = ({ roomId, onLeave }) => {
                     log(`<< Received 'peer-closed' from [${peerId}]`);
                     setConsumers(prev => {
                         const newConsumers = new Map(prev);
-                        for (const [consumerId, consumerData] of newConsumers.entries()) {
+                        newConsumers.forEach((consumerData, consumerId) => {
                             if (consumerData.peerId === peerId) {
                                 consumerData.consumer.close();
                                 newConsumers.delete(consumerId);
-                                log(`Closed and removed consumer for peer [${peerId}]`);
                             }
-                        }
+                        });
                         return newConsumers;
                     });
                 });
             } catch (err) {
-                error('Error during joinRoom process', err);
+                errorLog('Error during joinRoom process', err);
             }
         };
         
@@ -155,26 +132,16 @@ const Room = ({ roomId, onLeave }) => {
 
     const consume = async (peerId) => {
         log(`Attempting to consume from peer [${peerId}]`);
-        if (!recvTransportRef.current || !deviceRef.current || !deviceRef.current.loaded) {
-            error('Cannot consume, recvTransport or device not ready');
-            return;
-        }
+        if (!recvTransportRef.current || !deviceRef.current?.loaded) return;
 
         const result = await socketRequest('consume', { producerPeerId: peerId, rtpCapabilities: deviceRef.current.rtpCapabilities });
-        if (!result || !result.params) {
-            error(`Could not consume from peer [${peerId}], server returned invalid data.`);
-            return;
-        }
+        if (!result || !result.params) return;
 
-        const { params } = result;
-        const consumer = await recvTransportRef.current.consume(params);
-        log(`Consumer created on client [id:${consumer.id}], kind: ${consumer.kind}`);
-        
+        const consumer = await recvTransportRef.current.consume(result.params);
         await socketRequest('resume', { consumerId: consumer.id });
 
         const { track } = consumer;
         const stream = new MediaStream([track]);
-        log(`Received remote track for peer [${peerId}], setting new consumer state.`);
         setConsumers(prev => new Map(prev).set(consumer.id, { peerId, stream, consumer }));
     };
 
