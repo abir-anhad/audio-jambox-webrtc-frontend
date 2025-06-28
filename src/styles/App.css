@@ -1,0 +1,97 @@
+/*
+================================================================================
+File: /audio-jambox/frontend/src/styles/App.css
+================================================================================
+*/
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto:wght@300;400&display=swap');
+
+:root {
+    --background-color: #1a1a1d;
+    --primary-color: #c3073f;
+    --secondary-color: #6f2232;
+    --accent-color: #950740;
+    --text-color: #f5f5f5;
+    --glow-color: rgba(236, 72, 153, 0.7);
+}
+
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: var(--background-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    text-align: center;
+}
+
+.app-container {
+    width: 90%;
+    max-width: 1200px;
+    background-color: #222225;
+    border-radius: 20px;
+    padding: 2rem;
+    box-shadow: 0 0 30px var(--glow-color);
+    border: 1px solid var(--primary-color);
+}
+
+h1 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--primary-color);
+    letter-spacing: 2px;
+    text-shadow: 0 0 10px var(--glow-color);
+}
+
+#room-controls {
+    margin-bottom: 2rem;
+}
+
+input[type="text"] {
+    padding: 0.8rem;
+    border-radius: 8px;
+    border: 1px solid var(--secondary-color);
+    background-color: #2a2a2e;
+    color: var(--text-color);
+    font-size: 1rem;
+    margin-right: 1rem;
+    outline: none;
+    transition: all 0.3s ease;
+}
+
+input[type="text"]:focus {
+    border-color: var(--primary-color);
+    box-shadow: 0 0 10px var(--glow-color);
+}
+
+button {
+    padding: 0.8rem 1.5rem;
+    border: none;
+    border-radius: 8px;
+    background-color: var(--primary-color);
+    color: var(--text-color);
+    font-size: 1rem;
+    font-family: 'Orbitron', sans-serif;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 0 15px rgba(195, 7, 63, 0.5);
+}
+
+button:hover:not(:disabled) {
+    background-color: var(--accent-color);
+    box-shadow: 0 0 25px var(--glow-color);
+}
+
+button:disabled {
+    background-color: var(--secondary-color);
+    cursor: not-allowed;
+    box-shadow: none;
+}
+
+.status {
+    margin-top: 2rem;
+    font-style: italic;
+    color: #aaa;
+    min-height: 20px;
+}
