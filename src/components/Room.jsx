@@ -2,8 +2,7 @@
 ================================================================================
 File: /audio-jambox/frontend/src/components/Room.jsx
 ================================================================================
-This version fixes the "MID already exists" error by creating separate transports
-for sending (producing) and receiving (consuming) media.
+This version fixes the "already loaded" and "existing peers not consumed" bugs.
 */
 import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
@@ -16,7 +15,7 @@ const Room = ({ roomId, onLeave }) => {
     const socketRef = useRef();
     const deviceRef = useRef();
     const sendTransportRef = useRef();
-    const recvTransportRef = useRef(); // <-- Ref for the new receive transport
+    const recvTransportRef = useRef(); // Ref for the receive transport
 
     const [consumers, setConsumers] = useState(new Map());
     const [localStream, setLocalStream] = useState(null);
@@ -24,7 +23,9 @@ const Room = ({ roomId, onLeave }) => {
     // Helper to promisify socket.io requests
     const socketRequest = (type, data = {}) => {
         return new Promise((resolve) => {
-            socketRef.current.emit(type, { roomId, ...data }, resolve);
+            if (socketRef.current) {
+                socketRef.current.emit(type, { roomId, ...data }, resolve);
+            }
         });
     };
 
@@ -41,9 +42,14 @@ const Room = ({ roomId, onLeave }) => {
             const socket = socketRef.current;
             deviceRef.current = new mediasoupClient.Device();
             
-            await socketRequest('join');
+            // FIX: Get the list of peerIds already in the room
+            const { peerIds } = await socketRequest('join');
             const routerRtpCapabilities = await socketRequest('getRouterRtpCapabilities');
-            await deviceRef.current.load({ routerRtpCapabilities });
+            
+            // FIX: Add a guard to prevent loading the device more than once
+            if (!deviceRef.current.loaded) {
+                await deviceRef.current.load({ routerRtpCapabilities });
+            }
             
             // --- 3. Create Mediasoup SEND Transport ---
             const sendTransportParams = await socketRequest('createWebRtcTransport');
@@ -88,7 +94,14 @@ const Room = ({ roomId, onLeave }) => {
             const audioTrack = stream.getAudioTracks()[0];
             await sendTransportRef.current.produce({ track: audioTrack });
 
-            // --- 6. Set up socket listeners for dynamic events ---
+            // --- 6. Consume from existing peers ---
+            for (const peerId of peerIds) {
+                if (peerId !== socket.id) {
+                    consume(peerId);
+                }
+            }
+
+            // --- 7. Set up socket listeners for dynamic events ---
             socket.on('new-producer', ({ peerId }) => consume(peerId));
 
             socket.on('peer-closed', ({ peerId }) => {
@@ -108,23 +121,27 @@ const Room = ({ roomId, onLeave }) => {
         joinRoom();
 
         return () => {
+            // Cleanup logic
             socketRef.current?.disconnect();
             sendTransportRef.current?.close();
             recvTransportRef.current?.close();
             localStream?.getTracks().forEach(track => track.stop());
         };
-    }, [roomId]);
+    }, [roomId]); // This useEffect runs once on mount
 
     const consume = async (peerId) => {
         // Use the RECV transport to consume
-        if (!recvTransportRef.current) return;
+        if (!recvTransportRef.current || !deviceRef.current) return;
 
         const { params } = await socketRequest('consume', { 
             producerPeerId: peerId, 
             rtpCapabilities: deviceRef.current.rtpCapabilities 
         });
 
-        if (!params) return;
+        if (!params) {
+            console.error(`Could not consume from peer ${peerId}`);
+            return;
+        }
 
         const consumer = await recvTransportRef.current.consume(params);
         await socketRequest('resume', { consumerId: consumer.id });
@@ -140,6 +157,7 @@ const Room = ({ roomId, onLeave }) => {
             <div className="peers-container">
                 {localStream && <Peer peer={{ id: 'local', stream: localStream, isLocal: true }} />}
                 {Array.from(consumers.values()).map(({ peerId, stream }) => (
+                    // Use a unique key for each peer, peerId should be unique
                     <Peer key={peerId} peer={{ id: peerId, stream }} />
                 ))}
             </div>
