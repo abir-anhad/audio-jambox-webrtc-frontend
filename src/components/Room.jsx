@@ -2,7 +2,8 @@
 ================================================================================
 File: /audio-jambox/frontend/src/components/Room.jsx
 ================================================================================
-The core client component, completely refactored for Mediasoup.
+This version fixes the "MID already exists" error by creating separate transports
+for sending (producing) and receiving (consuming) media.
 */
 import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
@@ -14,7 +15,9 @@ const SERVER_URL = 'https://devvibe.highloka.com:3030';
 const Room = ({ roomId, onLeave }) => {
     const socketRef = useRef();
     const deviceRef = useRef();
-    const transportRef = useRef();
+    const sendTransportRef = useRef();
+    const recvTransportRef = useRef(); // <-- Ref for the new receive transport
+
     const [consumers, setConsumers] = useState(new Map());
     const [localStream, setLocalStream] = useState(null);
 
@@ -38,27 +41,27 @@ const Room = ({ roomId, onLeave }) => {
             const socket = socketRef.current;
             deviceRef.current = new mediasoupClient.Device();
             
-            const { peerIds } = await socketRequest('join');
+            await socketRequest('join');
             const routerRtpCapabilities = await socketRequest('getRouterRtpCapabilities');
             await deviceRef.current.load({ routerRtpCapabilities });
             
-            // --- 3. Create Mediasoup Transport ---
-            const transportParams = await socketRequest('createWebRtcTransport');
-            transportRef.current = deviceRef.current.createSendTransport(transportParams);
+            // --- 3. Create Mediasoup SEND Transport ---
+            const sendTransportParams = await socketRequest('createWebRtcTransport');
+            sendTransportRef.current = deviceRef.current.createSendTransport(sendTransportParams);
 
-            transportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
+            sendTransportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
                 try {
-                    await socketRequest('connectWebRtcTransport', { transportId: transportRef.current.id, dtlsParameters });
+                    await socketRequest('connectWebRtcTransport', { transportId: sendTransportRef.current.id, dtlsParameters });
                     callback();
                 } catch (error) {
                     errback(error);
                 }
             });
 
-            transportRef.current.on('produce', async (parameters, callback, errback) => {
+            sendTransportRef.current.on('produce', async (parameters, callback, errback) => {
                 try {
                     const { id } = await socketRequest('produce', {
-                        transportId: transportRef.current.id,
+                        transportId: sendTransportRef.current.id,
                         kind: parameters.kind,
                         rtpParameters: parameters.rtpParameters
                     });
@@ -68,22 +71,32 @@ const Room = ({ roomId, onLeave }) => {
                 }
             });
             
-            // --- 4. Start producing local audio ---
-            const audioTrack = stream.getAudioTracks()[0];
-            await transportRef.current.produce({ track: audioTrack });
+            // --- 4. Create Mediasoup RECV Transport ---
+            const recvTransportParams = await socketRequest('createWebRtcTransport');
+            recvTransportRef.current = deviceRef.current.createRecvTransport(recvTransportParams);
 
-            // --- 5. Consume existing peers ---
-            for (const peerId of peerIds) {
-                if (peerId !== socket.id) consume(peerId);
-            }
-            
+            recvTransportRef.current.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                try {
+                    await socketRequest('connectWebRtcTransport', { transportId: recvTransportRef.current.id, dtlsParameters });
+                    callback();
+                } catch (error) {
+                    errback(error);
+                }
+            });
+
+            // --- 5. Start producing local audio ---
+            const audioTrack = stream.getAudioTracks()[0];
+            await sendTransportRef.current.produce({ track: audioTrack });
+
             // --- 6. Set up socket listeners for dynamic events ---
-            socket.on('new-producer', ({ peerId, producerId }) => consume(peerId));
+            socket.on('new-producer', ({ peerId }) => consume(peerId));
+
             socket.on('peer-closed', ({ peerId }) => {
                 setConsumers(prev => {
                     const newConsumers = new Map(prev);
                     for (const [consumerId, consumerData] of newConsumers.entries()) {
                         if (consumerData.peerId === peerId) {
+                            consumerData.consumer.close();
                             newConsumers.delete(consumerId);
                         }
                     }
@@ -96,16 +109,24 @@ const Room = ({ roomId, onLeave }) => {
 
         return () => {
             socketRef.current?.disconnect();
-            transportRef.current?.close();
+            sendTransportRef.current?.close();
+            recvTransportRef.current?.close();
             localStream?.getTracks().forEach(track => track.stop());
         };
     }, [roomId]);
 
     const consume = async (peerId) => {
-        const { params } = await socketRequest('consume', { producerPeerId: peerId, rtpCapabilities: deviceRef.current.rtpCapabilities });
+        // Use the RECV transport to consume
+        if (!recvTransportRef.current) return;
+
+        const { params } = await socketRequest('consume', { 
+            producerPeerId: peerId, 
+            rtpCapabilities: deviceRef.current.rtpCapabilities 
+        });
+
         if (!params) return;
 
-        const consumer = await transportRef.current.consume(params);
+        const consumer = await recvTransportRef.current.consume(params);
         await socketRequest('resume', { consumerId: consumer.id });
 
         const { track } = consumer;
