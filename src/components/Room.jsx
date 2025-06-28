@@ -2,7 +2,7 @@
 ================================================================================
 File: /audio-jambox/frontend/src/components/Room.jsx
 ================================================================================
-This version fixes the "already loaded" and "existing peers not consumed" bugs.
+This version adds a robustness fix by using a more unique key for React components.
 */
 import React, { useEffect, useRef, useState } from 'react';
 import io from 'socket.io-client';
@@ -42,11 +42,9 @@ const Room = ({ roomId, onLeave }) => {
             const socket = socketRef.current;
             deviceRef.current = new mediasoupClient.Device();
             
-            // FIX: Get the list of peerIds already in the room
             const { peerIds } = await socketRequest('join');
             const routerRtpCapabilities = await socketRequest('getRouterRtpCapabilities');
             
-            // FIX: Add a guard to prevent loading the device more than once
             if (!deviceRef.current.loaded) {
                 await deviceRef.current.load({ routerRtpCapabilities });
             }
@@ -130,19 +128,19 @@ const Room = ({ roomId, onLeave }) => {
     }, [roomId]); // This useEffect runs once on mount
 
     const consume = async (peerId) => {
-        // Use the RECV transport to consume
         if (!recvTransportRef.current || !deviceRef.current) return;
 
-        const { params } = await socketRequest('consume', { 
+        const result = await socketRequest('consume', { 
             producerPeerId: peerId, 
             rtpCapabilities: deviceRef.current.rtpCapabilities 
         });
 
-        if (!params) {
-            console.error(`Could not consume from peer ${peerId}`);
+        if (!result || !result.params) { // Check if result and params are valid
+            console.error(`Could not consume from peer ${peerId}, server returned invalid data.`);
             return;
         }
 
+        const { params } = result;
         const consumer = await recvTransportRef.current.consume(params);
         await socketRequest('resume', { consumerId: consumer.id });
 
@@ -156,9 +154,9 @@ const Room = ({ roomId, onLeave }) => {
             <h2>Jam Session ID: {roomId}</h2>
             <div className="peers-container">
                 {localStream && <Peer peer={{ id: 'local', stream: localStream, isLocal: true }} />}
-                {Array.from(consumers.values()).map(({ peerId, stream }) => (
-                    // Use a unique key for each peer, peerId should be unique
-                    <Peer key={peerId} peer={{ id: peerId, stream }} />
+                {/* FIX: Use the unique consumerId for the key */}
+                {Array.from(consumers.entries()).map(([consumerId, { peerId, stream }]) => (
+                    <Peer key={consumerId} peer={{ id: peerId, stream }} />
                 ))}
             </div>
             <button onClick={onLeave} style={{ marginTop: '2rem' }}>Leave Session</button>
